@@ -102,6 +102,7 @@
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVM/ROCDL/Target.h"
 #include "mlir/Target/SPIRV/Target.h"
+#include "mlir/Dialect/Foo/Foo.h"
 
 namespace mlir {
 
@@ -110,6 +111,7 @@ inline void registerAllDialects(DialectRegistry &registry) {
   // clang-format off
   registry.insert<acc::OpenACCDialect,
                   affine::AffineDialect,
+                    foo::FooDialect,
                   amdgpu::AMDGPUDialect,
                   amx::AMXDialect,
                   arith::ArithDialect,
