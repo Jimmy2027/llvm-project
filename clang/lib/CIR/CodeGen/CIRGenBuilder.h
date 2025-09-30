@@ -12,8 +12,10 @@
 #include "Address.h"
 #include "CIRGenRecordLayout.h"
 #include "CIRGenTypeCache.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/Support/LLVM.h"
 #include "clang/CIR/Dialect/IR/CIRDataLayout.h"
-#include "clang/CIR/Interfaces/CIRTypeInterfaces.h"
 #include "clang/CIR/MissingFeatures.h"
 
 #include "clang/CIR/Dialect/Builder/CIRBaseBuilder.h"
@@ -60,6 +62,16 @@ public:
         trailingZerosNum);
   }
 
+  cir::ConstArrayAttr getConstArray(mlir::Attribute attrs,
+                                    cir::ArrayType arrayTy) const {
+    return cir::ConstArrayAttr::get(arrayTy, attrs);
+  }
+
+  mlir::Attribute getConstRecordOrZeroAttr(mlir::ArrayAttr arrayAttr,
+                                           bool packed = false,
+                                           bool padded = false,
+                                           mlir::Type type = {});
+
   cir::ConstRecordAttr getAnonConstRecord(mlir::ArrayAttr arrayAttr,
                                           bool packed = false,
                                           bool padded = false,
@@ -75,6 +87,11 @@ public:
 
     auto sTy = mlir::cast<cir::RecordType>(ty);
     return cir::ConstRecordAttr::get(sTy, arrayAttr);
+  }
+
+  cir::TypeInfoAttr getTypeInfo(mlir::ArrayAttr fieldsAttr) {
+    cir::ConstRecordAttr anonRecord = getAnonConstRecord(fieldsAttr);
+    return cir::TypeInfoAttr::get(anonRecord.getType(), fieldsAttr);
   }
 
   std::string getUniqueAnonRecordName() { return getUniqueRecordName("anon"); }
@@ -126,9 +143,9 @@ public:
   ///
   /// If a record already exists and is complete, but the client tries to fetch
   /// it with a different set of attributes, this method will crash.
-  cir::RecordType getCompleteRecordTy(llvm::ArrayRef<mlir::Type> members,
-                                      llvm::StringRef name, bool packed,
-                                      bool padded) {
+  cir::RecordType getCompleteNamedRecordType(llvm::ArrayRef<mlir::Type> members,
+                                             bool packed, bool padded,
+                                             llvm::StringRef name) {
     const auto nameAttr = getStringAttr(name);
     auto kind = cir::RecordType::RecordKind::Struct;
     assert(!cir::MissingFeatures::astRecordDeclAttr());
@@ -149,6 +166,11 @@ public:
 
     return type;
   }
+
+  cir::RecordType getCompleteRecordType(mlir::ArrayAttr fields,
+                                        bool packed = false,
+                                        bool padded = false,
+                                        llvm::StringRef name = "");
 
   /// Get an incomplete CIR struct type. If we have a complete record
   /// declaration, we may create an incomplete type and then add the
