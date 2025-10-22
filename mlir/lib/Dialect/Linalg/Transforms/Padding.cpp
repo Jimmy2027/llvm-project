@@ -110,11 +110,17 @@ FailureOr<bool> PaddedShape::initialize(linalg::LinalgOp opToPad,
                         << "\n");
       continue;
     }
+    if (!ShapedType::isDynamic(shape[i])) {
+      info.size = IntegerAttr::get(IndexType::get(opToPad.getContext()),
+                                  shape[i]);
+      LLVM_DEBUG(DBGS() << "----new un-padded size (static): " << info.size << "\n");
+      continue;
+    }
     // Otherwise, try to compute a constant upper bound for the size value.
     FailureOr<int64_t> upperBound =
         ValueBoundsConstraintSet::computeConstantBound(
             presburger::BoundType::UB,
-            {opOperand->get(),
+            {/*value=*/opOperand->get(),
              /*dim=*/i},
             /*stopCondition=*/nullptr, /*closedUB=*/true);
     if (failed(upperBound)) {
@@ -154,11 +160,15 @@ void PaddedShape::computePadding(OpBuilder &builder, Value operand) {
     }
 
     // Compute the padded size to be a multiple of `padToMultipleOf`.
+    LLVM_DEBUG(DBGS() << "----paddingInfo.size: " << paddingInfo.size << ", padToMultipleOf: " << paddingInfo.padToMultipleOf << "\n");
+    llvm::errs() << "DEBUG: dim=" << i << ", paddingInfo.size=" << paddingInfo.size << ", padToMultipleOf=" << paddingInfo.padToMultipleOf << "\n";
     AffineExpr szExpr = (sizeSym).ceilDiv(paddingInfo.padToMultipleOf) *
                         paddingInfo.padToMultipleOf;
     OpFoldResult paddedSize = affine::makeComposedFoldedAffineApply(
         builder, loc, szExpr, paddingInfo.size);
     assert(paddedSize && "invalid arguments to affine apply");
+    LLVM_DEBUG(DBGS() << "----paddedSize: " << paddedSize << "\n");
+    llvm::errs() << "DEBUG: paddedSize=" << paddedSize << "\n";
 
     if (auto cstSzAttr = dyn_cast<Attribute>(paddedSize)) {
       // Update the shape as the size is static.
