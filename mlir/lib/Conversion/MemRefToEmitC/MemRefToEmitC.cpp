@@ -29,8 +29,11 @@
 using namespace mlir;
 
 static bool isMemRefTypeLegalForEmitC(MemRefType memRefType) {
+  // Rank-0 memrefs are always legal (layout doesn't apply to scalars)
+  if (memRefType.getRank() == 0)
+    return memRefType.hasStaticShape();
+
   return memRefType.hasStaticShape() && memRefType.getLayout().isIdentity() &&
-         memRefType.getRank() != 0 &&
          !llvm::is_contained(memRefType.getShape(), 0);
 }
 
@@ -80,10 +83,30 @@ struct ConvertAlloca final : public OpConversionPattern<memref::AllocaOp> {
           op.getLoc(), "cannot transform alloca with alignment requirement");
     }
 
-    auto resultTy = getTypeConverter()->convertType(op.getType());
+    MemRefType memrefType = op.getType();
+    auto resultTy = getTypeConverter()->convertType(memrefType);
     if (!resultTy) {
       return rewriter.notifyMatchFailure(op.getLoc(), "cannot convert type");
     }
+
+    // Handle rank-0 specially: create variable of element type, then take address
+    if (memrefType.getRank() == 0) {
+      Type elementType =
+          getTypeConverter()->convertType(memrefType.getElementType());
+      if (!elementType) {
+        return rewriter.notifyMatchFailure(op.getLoc(),
+                                           "cannot convert element type");
+      }
+      auto noInit = emitc::OpaqueAttr::get(getContext(), "");
+      emitc::LValueType lvalueType = emitc::LValueType::get(elementType);
+      emitc::VariableOp var =
+          rewriter.create<emitc::VariableOp>(op.getLoc(), lvalueType, noInit);
+      rewriter.replaceOpWithNewOp<emitc::ApplyOp>(
+          op, resultTy, rewriter.getStringAttr("&"), var);
+      return success();
+    }
+
+    // Higher-rank case: create array variable
     auto noInit = emitc::OpaqueAttr::get(getContext(), "");
     rewriter.replaceOpWithNewOp<emitc::VariableOp>(op, resultTy, noInit);
     return success();
@@ -98,6 +121,39 @@ Type convertMemRefType(MemRefType opTy, const TypeConverter *typeConverter) {
     resultTy = typeConverter->convertType(opTy);
   }
   return resultTy;
+}
+
+/// Strip const qualifier from a type if present.
+/// Converts `!emitc.opaque<"const TYPE">` back to the original type.
+static Type stripConstQualifier(Type type, OpBuilder &builder) {
+  auto opaqueType = dyn_cast<emitc::OpaqueType>(type);
+  if (!opaqueType)
+    return type;
+
+  StringRef value = opaqueType.getValue();
+  if (!value.starts_with("const "))
+    return type;
+
+  // Extract the type string after "const "
+  std::string unconst = value.substr(6).str();
+
+  // Try to convert back to a non-opaque type if possible
+  // Common mappings from C type strings to MLIR types
+  if (unconst == "int8_t")
+    return builder.getIntegerType(8);
+  if (unconst == "int16_t")
+    return builder.getIntegerType(16);
+  if (unconst == "int32_t")
+    return builder.getI32Type();
+  if (unconst == "int64_t")
+    return builder.getI64Type();
+  if (unconst == "float")
+    return builder.getF32Type();
+  if (unconst == "double")
+    return builder.getF64Type();
+
+  // If we can't convert back, return an opaque type without const
+  return emitc::OpaqueType::get(builder.getContext(), unconst);
 }
 
 static Value calculateMemrefTotalSizeBytes(Location loc, MemRefType memrefType,
@@ -223,6 +279,42 @@ struct ConvertCopy final : public OpConversionPattern<memref::CopyOp> {
       return rewriter.notifyMatchFailure(
           loc, "incompatible target memref type for EmitC conversion");
 
+    // Handle rank-0 (scalar) copies differently - use assign instead of memcpy
+    if (srcMemrefType.getRank() == 0) {
+      // For rank-0, operands are pointers, not arrays
+      auto srcPtr = cast<TypedValue<emitc::PointerType>>(operands.getSource());
+      auto targetPtr =
+          cast<TypedValue<emitc::PointerType>>(operands.getTarget());
+
+      // Extract the element type and strip const qualifier if present
+      // (source might be const-qualified, but the value type should not be)
+      Type elementType =
+          cast<emitc::PointerType>(srcPtr.getType()).getPointee();
+      elementType = stripConstQualifier(elementType, rewriter);
+
+      // Use subscript[0] to get lvalue from source pointer
+      emitc::ConstantOp zeroIndex = emitc::ConstantOp::create(
+          rewriter, loc, rewriter.getIndexType(), rewriter.getIndexAttr(0));
+      emitc::LValueType lvalueType = emitc::LValueType::get(elementType);
+      Value srcLValue = emitc::SubscriptOp::create(rewriter, loc, lvalueType,
+                                                    srcPtr, ValueRange{zeroIndex})
+                            .getResult();
+      Value srcValue =
+          emitc::LoadOp::create(rewriter, loc, elementType, srcLValue);
+
+      // Use subscript[0] to get lvalue from target pointer
+      Value targetLValue = emitc::SubscriptOp::create(rewriter, loc, lvalueType,
+                                                      targetPtr,
+                                                      ValueRange{zeroIndex})
+                               .getResult();
+
+      // Assign value to target
+      rewriter.replaceOpWithNewOp<emitc::AssignOp>(copyOp, targetLValue,
+                                                    srcValue);
+      return success();
+    }
+
+    // Higher-rank case - use memcpy
     auto srcArrayValue =
         cast<TypedValue<emitc::ArrayType>>(operands.getSource());
     emitc::AddressOfOp srcPtr =
@@ -284,7 +376,7 @@ struct ConvertGlobal final : public OpConversionPattern<memref::GlobalOp> {
     bool externSpecifier = !staticSpecifier;
 
     Attribute initialValue = operands.getInitialValueAttr();
-    if (opTy.getRank() == 0) {
+    if (opTy.getRank() == 0 && op.getInitialValue()) {
       auto elementsAttr = llvm::cast<ElementsAttr>(*op.getInitialValue());
       initialValue = elementsAttr.getSplatValue<Attribute>();
     }
@@ -318,9 +410,26 @@ struct ConvertGetGlobal final
       emitc::LValueType lvalueType = emitc::LValueType::get(resultTy);
       emitc::GetGlobalOp globalLValue = emitc::GetGlobalOp::create(
           rewriter, op.getLoc(), lvalueType, operands.getNameAttr());
-      emitc::PointerType pointerType = emitc::PointerType::get(resultTy);
-      rewriter.replaceOpWithNewOp<emitc::AddressOfOp>(op, pointerType,
-                                                      globalLValue);
+
+      // Determine the pointer element type
+      Type pointerElementType = resultTy;
+
+      // Check if the global is const
+      auto globalOp = SymbolTable::lookupNearestSymbolFrom<emitc::GlobalOp>(
+          globalLValue, operands.getNameAttr());
+      if (globalOp && globalOp.getConstSpecifier()) {
+        // Create a const pointer type using opaque type
+        std::string cTypeString = emitc::getCTypeString(pointerElementType);
+        if (!cTypeString.empty()) {
+          pointerElementType = emitc::OpaqueType::get(rewriter.getContext(),
+                                                      "const " + cTypeString);
+        }
+      }
+
+      emitc::PointerType pointerType =
+          emitc::PointerType::get(pointerElementType);
+      rewriter.replaceOpWithNewOp<emitc::ApplyOp>(
+          op, pointerType, rewriter.getStringAttr("&"), globalLValue);
       return success();
     }
     rewriter.replaceOpWithNewOp<emitc::GetGlobalOp>(op, resultTy,
@@ -328,6 +437,34 @@ struct ConvertGetGlobal final
     return success();
   }
 };
+
+/// Helper to obtain an lvalue from either pointer or array memref operands.
+/// For rank-0 (pointer), uses emitc.subscript with index 0.
+/// For higher-rank (array), uses emitc.subscript with indices.
+/// Note: elementType should be the unqualified element type, not const-qualified.
+static Value getLValueFromMemRef(Location loc, OpBuilder &builder, Value memref,
+                                  ValueRange indices, Type elementType) {
+  // Check if this is a pointer type (rank-0 memref case)
+  if (auto ptrType = dyn_cast<emitc::PointerType>(memref.getType())) {
+    // Treat pointer as 1-element array and subscript with 0
+    assert(indices.empty() && "rank-0 memref should have no indices");
+    emitc::ConstantOp zeroIndex = emitc::ConstantOp::create(
+        builder, loc, builder.getIndexType(), builder.getIndexAttr(0));
+
+    // Strip const qualifier from element type if present
+    // (elementType should already be unqualified, but be defensive)
+    Type unconst = stripConstQualifier(elementType, builder);
+    emitc::LValueType lvalueType = emitc::LValueType::get(unconst);
+    return emitc::SubscriptOp::create(builder, loc, lvalueType, memref,
+                                      ValueRange{zeroIndex})
+        .getResult();
+  }
+
+  // Array type (higher-rank memref case) - use subscript
+  auto arrayValue = cast<TypedValue<emitc::ArrayType>>(memref);
+  return emitc::SubscriptOp::create(builder, loc, arrayValue, indices)
+      .getResult();
+}
 
 struct ConvertLoad final : public OpConversionPattern<memref::LoadOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -341,16 +478,11 @@ struct ConvertLoad final : public OpConversionPattern<memref::LoadOp> {
       return rewriter.notifyMatchFailure(op.getLoc(), "cannot convert type");
     }
 
-    auto arrayValue =
-        dyn_cast<TypedValue<emitc::ArrayType>>(operands.getMemref());
-    if (!arrayValue) {
-      return rewriter.notifyMatchFailure(op.getLoc(), "expected array type");
-    }
+    Value lvalue = getLValueFromMemRef(op.getLoc(), rewriter,
+                                       operands.getMemref(),
+                                       operands.getIndices(), resultTy);
 
-    auto subscript = emitc::SubscriptOp::create(
-        rewriter, op.getLoc(), arrayValue, operands.getIndices());
-
-    rewriter.replaceOpWithNewOp<emitc::LoadOp>(op, resultTy, subscript);
+    rewriter.replaceOpWithNewOp<emitc::LoadOp>(op, resultTy, lvalue);
     return success();
   }
 };
@@ -361,15 +493,14 @@ struct ConvertStore final : public OpConversionPattern<memref::StoreOp> {
   LogicalResult
   matchAndRewrite(memref::StoreOp op, OpAdaptor operands,
                   ConversionPatternRewriter &rewriter) const override {
-    auto arrayValue =
-        dyn_cast<TypedValue<emitc::ArrayType>>(operands.getMemref());
-    if (!arrayValue) {
-      return rewriter.notifyMatchFailure(op.getLoc(), "expected array type");
-    }
+    // Get the element type from the value being stored
+    Type elementType = operands.getValue().getType();
 
-    auto subscript = emitc::SubscriptOp::create(
-        rewriter, op.getLoc(), arrayValue, operands.getIndices());
-    rewriter.replaceOpWithNewOp<emitc::AssignOp>(op, subscript,
+    Value lvalue = getLValueFromMemRef(op.getLoc(), rewriter,
+                                       operands.getMemref(),
+                                       operands.getIndices(), elementType);
+
+    rewriter.replaceOpWithNewOp<emitc::AssignOp>(op, lvalue,
                                                  operands.getValue());
     return success();
   }
@@ -386,6 +517,13 @@ void mlir::populateMemRefToEmitCTypeConversion(TypeConverter &typeConverter) {
             typeConverter.convertType(memRefType.getElementType());
         if (!convertedElementType)
           return {};
+
+        // Rank-0 memrefs convert to pointers
+        if (memRefType.getRank() == 0) {
+          return emitc::PointerType::get(convertedElementType);
+        }
+
+        // Higher-rank memrefs convert to arrays
         return emitc::ArrayType::get(memRefType.getShape(),
                                      convertedElementType);
       });
@@ -400,8 +538,41 @@ void mlir::populateMemRefToEmitCTypeConversion(TypeConverter &typeConverter) {
         .getResult(0);
   };
 
+  // Target materialization for const pointer to non-const pointer conversion
+  auto materializeConstPointerCast = [](OpBuilder &builder, Type resultType,
+                                        ValueRange inputs,
+                                        Location loc) -> Value {
+    if (inputs.size() != 1)
+      return Value();
+
+    Value input = inputs[0];
+    auto inputPtrType = dyn_cast<emitc::PointerType>(input.getType());
+    auto resultPtrType = dyn_cast<emitc::PointerType>(resultType);
+
+    // Check if this is a const pointer to non-const pointer conversion
+    if (inputPtrType && resultPtrType) {
+      auto inputPointee = inputPtrType.getPointee();
+
+      // Check if input is const-qualified opaque type
+      if (auto inputOpaque = dyn_cast<emitc::OpaqueType>(inputPointee)) {
+        StringRef value = inputOpaque.getValue();
+        if (value.starts_with("const ")) {
+          // Use emitc.cast for const-to-non-const pointer conversion
+          // This represents casting away const, which is semantically
+          // allowed for read-only operations
+          return emitc::CastOp::create(builder, loc, resultType, input)
+              .getResult();
+        }
+      }
+    }
+
+    // Fall back to unrealized cast for other cases
+    return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
+        .getResult(0);
+  };
+
   typeConverter.addSourceMaterialization(materializeAsUnrealizedCast);
-  typeConverter.addTargetMaterialization(materializeAsUnrealizedCast);
+  typeConverter.addTargetMaterialization(materializeConstPointerCast);
 }
 
 void mlir::populateMemRefToEmitCConversionPatterns(
