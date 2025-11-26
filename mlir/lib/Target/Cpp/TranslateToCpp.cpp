@@ -875,6 +875,42 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
+/// Helper function to check if a value traces back to a const global.
+/// Handles direct GetGlobalOp and GetGlobalOp through one or more SubscriptOps
+/// (for multi-dimensional array access).
+/// Returns the GlobalOp if found and it has const_specifier, nullptr otherwise.
+static emitc::GlobalOp getConstGlobalThroughSubscript(Value value,
+                                                      Operation *fromOp) {
+  // Trace through the full chain of SubscriptOps (for multi-dimensional arrays)
+  while (auto subscriptOp = value.getDefiningOp<emitc::SubscriptOp>()) {
+    value = subscriptOp.getValue();
+  }
+
+  // Check if it's a GetGlobalOp (either directly or after SubscriptOps)
+  auto getGlobalOp = value.getDefiningOp<emitc::GetGlobalOp>();
+  if (!getGlobalOp)
+    return nullptr;
+
+  // Find the nearest symbol table
+  Operation *symbolTableOp = fromOp;
+  while (symbolTableOp && !symbolTableOp->hasTrait<OpTrait::SymbolTable>()) {
+    symbolTableOp = symbolTableOp->getParentOp();
+  }
+
+  if (!symbolTableOp)
+    return nullptr;
+
+  // Look up the global
+  SymbolTable symbolTable(symbolTableOp);
+  auto globalOp = symbolTable.lookup<emitc::GlobalOp>(getGlobalOp.getName());
+
+  // Return only if it has const_specifier
+  if (globalOp && globalOp.getConstSpecifier())
+    return globalOp;
+
+  return nullptr;
+}
+
 static LogicalResult printOperation(CppEmitter &emitter,
                                     emitc::ApplyOp applyOp) {
   raw_ostream &os = emitter.ostream();
@@ -882,8 +918,32 @@ static LogicalResult printOperation(CppEmitter &emitter,
 
   if (failed(emitter.emitAssignPrefix(op)))
     return failure();
-  os << applyOp.getApplicableOperator();
-  return emitter.emitOperand(applyOp.getOperand());
+
+  StringRef applicableOperator = applyOp.getApplicableOperator();
+  Value operand = applyOp.getOperand();
+
+  // Check if we're taking address of a subscript into a const global.
+  // Since MLIR types don't track const qualification, but C/C++ adds const
+  // when taking address of const global, we need a cast to match MLIR's
+  // type expectations. Use C-style cast for C99 compatibility.
+  if (applicableOperator == "&") {
+    if (getConstGlobalThroughSubscript(operand, &op)) {
+      // Emit C-style cast to strip const that C/C++ would add
+      os << "(";
+      if (failed(emitter.emitType(op.getLoc(), op.getResult(0).getType())))
+        return failure();
+      os << ")(";
+      os << applicableOperator;
+      if (failed(emitter.emitOperand(operand)))
+        return failure();
+      os << ")";
+      return success();
+    }
+  }
+
+  // Default behavior
+  os << applicableOperator;
+  return emitter.emitOperand(operand);
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
