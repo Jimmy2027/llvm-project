@@ -79,11 +79,10 @@ module @rank0_load {
   // CHECK-LABEL: load_from_rank0
   func.func @load_from_rank0() -> f32 {
     // CHECK-NEXT: %[[GLOBAL:.*]] = emitc.get_global @scalar_constant : !emitc.lvalue<f32>
-    // CHECK-NEXT: %[[PTR:.*]] = emitc.apply "&"(%[[GLOBAL]]) : (!emitc.lvalue<f32>) -> !emitc.ptr<!emitc.opaque<"const float">>
+    // CHECK-NEXT: %[[PTR:.*]] = emitc.apply "&"(%[[GLOBAL]]) : (!emitc.lvalue<f32>) -> !emitc.ptr<f32>
     %0 = memref.get_global @scalar_constant : memref<f32>
-    // CHECK-NEXT: %[[CAST:.*]] = emitc.cast %[[PTR]] : !emitc.ptr<!emitc.opaque<"const float">> to !emitc.ptr<f32>
     // CHECK-NEXT: %[[ZERO:.*]] = "emitc.constant"() <{value = 0 : index}> : () -> index
-    // CHECK-NEXT: %[[LVALUE:.*]] = emitc.subscript %[[CAST]][%[[ZERO]]] : (!emitc.ptr<f32>, index) -> !emitc.lvalue<f32>
+    // CHECK-NEXT: %[[LVALUE:.*]] = emitc.subscript %[[PTR]][%[[ZERO]]] : (!emitc.ptr<f32>, index) -> !emitc.lvalue<f32>
     // CHECK-NEXT: %[[VALUE:.*]] = emitc.load %[[LVALUE]] : <f32>
     %1 = memref.load %0[] : memref<f32>
     // CHECK-NEXT: return %[[VALUE]] : f32

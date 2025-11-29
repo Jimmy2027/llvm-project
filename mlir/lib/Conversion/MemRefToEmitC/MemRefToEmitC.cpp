@@ -123,39 +123,6 @@ Type convertMemRefType(MemRefType opTy, const TypeConverter *typeConverter) {
   return resultTy;
 }
 
-/// Strip const qualifier from a type if present.
-/// Converts `!emitc.opaque<"const TYPE">` back to the original type.
-static Type stripConstQualifier(Type type, OpBuilder &builder) {
-  auto opaqueType = dyn_cast<emitc::OpaqueType>(type);
-  if (!opaqueType)
-    return type;
-
-  StringRef value = opaqueType.getValue();
-  if (!value.starts_with("const "))
-    return type;
-
-  // Extract the type string after "const "
-  std::string unconst = value.substr(6).str();
-
-  // Try to convert back to a non-opaque type if possible
-  // Common mappings from C type strings to MLIR types
-  if (unconst == "int8_t")
-    return builder.getIntegerType(8);
-  if (unconst == "int16_t")
-    return builder.getIntegerType(16);
-  if (unconst == "int32_t")
-    return builder.getI32Type();
-  if (unconst == "int64_t")
-    return builder.getI64Type();
-  if (unconst == "float")
-    return builder.getF32Type();
-  if (unconst == "double")
-    return builder.getF64Type();
-
-  // If we can't convert back, return an opaque type without const
-  return emitc::OpaqueType::get(builder.getContext(), unconst);
-}
-
 static Value calculateMemrefTotalSizeBytes(Location loc, MemRefType memrefType,
                                            OpBuilder &builder) {
   assert(isMemRefTypeLegalForEmitC(memrefType) &&
@@ -286,11 +253,9 @@ struct ConvertCopy final : public OpConversionPattern<memref::CopyOp> {
       auto targetPtr =
           cast<TypedValue<emitc::PointerType>>(operands.getTarget());
 
-      // Extract the element type and strip const qualifier if present
-      // (source might be const-qualified, but the value type should not be)
+      // Use the target pointer's element type (target is never const)
       Type elementType =
-          cast<emitc::PointerType>(srcPtr.getType()).getPointee();
-      elementType = stripConstQualifier(elementType, rewriter);
+          cast<emitc::PointerType>(targetPtr.getType()).getPointee();
 
       // Use subscript[0] to get lvalue from source pointer
       emitc::ConstantOp zeroIndex = emitc::ConstantOp::create(
@@ -410,24 +375,7 @@ struct ConvertGetGlobal final
       emitc::LValueType lvalueType = emitc::LValueType::get(resultTy);
       emitc::GetGlobalOp globalLValue = emitc::GetGlobalOp::create(
           rewriter, op.getLoc(), lvalueType, operands.getNameAttr());
-
-      // Determine the pointer element type
-      Type pointerElementType = resultTy;
-
-      // Check if the global is const
-      auto globalOp = SymbolTable::lookupNearestSymbolFrom<emitc::GlobalOp>(
-          globalLValue, operands.getNameAttr());
-      if (globalOp && globalOp.getConstSpecifier()) {
-        // Create a const pointer type using opaque type
-        std::string cTypeString = emitc::getCTypeString(pointerElementType);
-        if (!cTypeString.empty()) {
-          pointerElementType = emitc::OpaqueType::get(rewriter.getContext(),
-                                                      "const " + cTypeString);
-        }
-      }
-
-      emitc::PointerType pointerType =
-          emitc::PointerType::get(pointerElementType);
+      emitc::PointerType pointerType = emitc::PointerType::get(resultTy);
       rewriter.replaceOpWithNewOp<emitc::ApplyOp>(
           op, pointerType, rewriter.getStringAttr("&"), globalLValue);
       return success();
@@ -441,7 +389,6 @@ struct ConvertGetGlobal final
 /// Helper to obtain an lvalue from either pointer or array memref operands.
 /// For rank-0 (pointer), uses emitc.subscript with index 0.
 /// For higher-rank (array), uses emitc.subscript with indices.
-/// Note: elementType should be the unqualified element type, not const-qualified.
 static Value getLValueFromMemRef(Location loc, OpBuilder &builder, Value memref,
                                   ValueRange indices, Type elementType) {
   // Check if this is a pointer type (rank-0 memref case)
@@ -450,11 +397,7 @@ static Value getLValueFromMemRef(Location loc, OpBuilder &builder, Value memref,
     assert(indices.empty() && "rank-0 memref should have no indices");
     emitc::ConstantOp zeroIndex = emitc::ConstantOp::create(
         builder, loc, builder.getIndexType(), builder.getIndexAttr(0));
-
-    // Strip const qualifier from element type if present
-    // (elementType should already be unqualified, but be defensive)
-    Type unconst = stripConstQualifier(elementType, builder);
-    emitc::LValueType lvalueType = emitc::LValueType::get(unconst);
+    emitc::LValueType lvalueType = emitc::LValueType::get(elementType);
     return emitc::SubscriptOp::create(builder, loc, lvalueType, memref,
                                       ValueRange{zeroIndex})
         .getResult();
@@ -538,41 +481,8 @@ void mlir::populateMemRefToEmitCTypeConversion(TypeConverter &typeConverter) {
         .getResult(0);
   };
 
-  // Target materialization for const pointer to non-const pointer conversion
-  auto materializeConstPointerCast = [](OpBuilder &builder, Type resultType,
-                                        ValueRange inputs,
-                                        Location loc) -> Value {
-    if (inputs.size() != 1)
-      return Value();
-
-    Value input = inputs[0];
-    auto inputPtrType = dyn_cast<emitc::PointerType>(input.getType());
-    auto resultPtrType = dyn_cast<emitc::PointerType>(resultType);
-
-    // Check if this is a const pointer to non-const pointer conversion
-    if (inputPtrType && resultPtrType) {
-      auto inputPointee = inputPtrType.getPointee();
-
-      // Check if input is const-qualified opaque type
-      if (auto inputOpaque = dyn_cast<emitc::OpaqueType>(inputPointee)) {
-        StringRef value = inputOpaque.getValue();
-        if (value.starts_with("const ")) {
-          // Use emitc.cast for const-to-non-const pointer conversion
-          // This represents casting away const, which is semantically
-          // allowed for read-only operations
-          return emitc::CastOp::create(builder, loc, resultType, input)
-              .getResult();
-        }
-      }
-    }
-
-    // Fall back to unrealized cast for other cases
-    return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
-        .getResult(0);
-  };
-
   typeConverter.addSourceMaterialization(materializeAsUnrealizedCast);
-  typeConverter.addTargetMaterialization(materializeConstPointerCast);
+  typeConverter.addTargetMaterialization(materializeAsUnrealizedCast);
 }
 
 void mlir::populateMemRefToEmitCConversionPatterns(
