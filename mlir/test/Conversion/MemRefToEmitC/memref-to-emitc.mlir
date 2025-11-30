@@ -109,3 +109,31 @@ module @rank0_store {
     return
   }
 }
+
+// -----
+
+// CHECK-LABEL: extract_aligned_pointer_as_index
+// CHECK-SAME:  %[[ARG:.*]]: memref<4xf32>
+func.func @extract_aligned_pointer_as_index(%arg : memref<4xf32>) -> index {
+  // CHECK-NEXT: %[[ARRAY:.*]] = builtin.unrealized_conversion_cast %[[ARG]] : memref<4xf32> to !emitc.array<4xf32>
+  // CHECK-NEXT: %[[ZERO:.*]] = "emitc.constant"() <{value = 0 : index}> : () -> index
+  // CHECK-NEXT: %[[SUB:.*]] = emitc.subscript %[[ARRAY]][%[[ZERO]]] : (!emitc.array<4xf32>, index) -> !emitc.lvalue<f32>
+  // CHECK-NEXT: %[[PTR:.*]] = emitc.apply "&"(%[[SUB]]) : (!emitc.lvalue<f32>) -> !emitc.ptr<f32>
+  // CHECK-NEXT: %[[CAST:.*]] = emitc.cast %[[PTR]] : !emitc.ptr<f32> to index
+  %0 = memref.extract_aligned_pointer_as_index %arg : memref<4xf32> -> index
+  // CHECK-NEXT: return %[[CAST]] : index
+  return %0 : index
+}
+
+// -----
+
+// CHECK-LABEL: extract_aligned_pointer_as_index_rank0
+func.func @extract_aligned_pointer_as_index_rank0() -> index {
+  // CHECK-NEXT: %[[VAR:.*]] = "emitc.variable"() <{value = #emitc.opaque<"">}> : () -> !emitc.lvalue<i32>
+  // CHECK-NEXT: %[[PTR:.*]] = emitc.apply "&"(%[[VAR]]) : (!emitc.lvalue<i32>) -> !emitc.ptr<i32>
+  %0 = memref.alloca() : memref<i32>
+  // CHECK-NEXT: %[[CAST:.*]] = emitc.cast %[[PTR]] : !emitc.ptr<i32> to index
+  %1 = memref.extract_aligned_pointer_as_index %0 : memref<i32> -> index
+  // CHECK-NEXT: return %[[CAST]] : index
+  return %1 : index
+}

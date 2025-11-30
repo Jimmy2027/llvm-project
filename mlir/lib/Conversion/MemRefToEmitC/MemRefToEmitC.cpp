@@ -448,6 +448,48 @@ struct ConvertStore final : public OpConversionPattern<memref::StoreOp> {
     return success();
   }
 };
+
+struct ConvertExtractAlignedPointerAsIndex final
+    : public OpConversionPattern<memref::ExtractAlignedPointerAsIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::ExtractAlignedPointerAsIndexOp op, OpAdaptor operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto memrefType = cast<MemRefType>(op.getSource().getType());
+
+    if (!isMemRefTypeLegalForEmitC(memrefType)) {
+      return rewriter.notifyMatchFailure(
+          loc, "incompatible memref type for EmitC conversion");
+    }
+
+    // Get the converted result type (index -> size_t in EmitC)
+    Type resultType = getTypeConverter()->convertType(op.getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(loc, "cannot convert result type");
+    }
+
+    Value source = operands.getSource();
+    Value ptr;
+
+    // For rank-0 memrefs, the converted operand is already a pointer
+    if (auto ptrType = dyn_cast<emitc::PointerType>(source.getType())) {
+      ptr = source;
+    } else if (auto arrayType = dyn_cast<emitc::ArrayType>(source.getType())) {
+      // For higher-rank memrefs, get pointer to first element
+      ptr = createPointerFromEmitcArray(
+          loc, rewriter, cast<TypedValue<emitc::ArrayType>>(source));
+    } else {
+      return rewriter.notifyMatchFailure(loc,
+                                         "expected pointer or array type");
+    }
+
+    // Cast pointer to converted index type (emits C-style cast like (size_t)ptr)
+    rewriter.replaceOpWithNewOp<emitc::CastOp>(op, resultType, ptr);
+    return success();
+  }
+};
 } // namespace
 
 void mlir::populateMemRefToEmitCTypeConversion(TypeConverter &typeConverter) {
@@ -487,7 +529,8 @@ void mlir::populateMemRefToEmitCTypeConversion(TypeConverter &typeConverter) {
 
 void mlir::populateMemRefToEmitCConversionPatterns(
     RewritePatternSet &patterns, const TypeConverter &converter) {
-  patterns.add<ConvertAlloca, ConvertAlloc, ConvertCopy, ConvertGlobal,
+  patterns.add<ConvertAlloca, ConvertAlloc, ConvertCopy,
+               ConvertExtractAlignedPointerAsIndex, ConvertGlobal,
                ConvertGetGlobal, ConvertLoad, ConvertStore>(
       converter, patterns.getContext());
 }
