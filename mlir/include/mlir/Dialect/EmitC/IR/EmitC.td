@@ -925,6 +925,7 @@ def EmitC_IncludeOp
     UnitAttr:$is_standard_include
   );
   let hasCustomAssemblyFormat = 1;
+  let hasCanonicalizer = 1;
 }
 
 def EmitC_LiteralOp : EmitC_Op<"literal", [Pure]> {

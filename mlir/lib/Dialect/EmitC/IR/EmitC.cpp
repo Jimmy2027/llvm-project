@@ -12,6 +12,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Support/LLVM.h"
@@ -957,6 +958,76 @@ ParseResult IncludeOp::parse(OpAsmParser &parser, OperationState &result) {
                         UnitAttr::get(parser.getContext()));
 
   return success();
+}
+
+namespace {
+/// Deduplicates identical include directives within a module.
+/// This pattern processes IncludeOps in the immediate module scope (not nested
+/// modules), removing duplicate instances and keeping only the first occurrence
+/// of each unique (include_name, is_standard) pair.
+///
+/// Performance: Runs once per module (on the first IncludeOp) with O(n)
+/// complexity using DenseSet for tracking seen includes.
+struct DeduplicateIncludeOp : public OpRewritePattern<IncludeOp> {
+  using OpRewritePattern<IncludeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(IncludeOp op,
+                                PatternRewriter &rewriter) const override {
+    // Find the parent ModuleOp to perform module-scoped deduplication.
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    if (!moduleOp)
+      return failure();
+
+    // Only process deduplication when encountering the first IncludeOp in the
+    // module. This ensures O(n) total work instead of O(n²) or O(n³) from
+    // running the pattern separately for each of the n includes.
+    auto includeRange = moduleOp.getOps<IncludeOp>();
+    if (includeRange.empty())
+      return failure();
+    if (*includeRange.begin() != op)
+      return failure();
+
+    // Track seen include names separately for standard and non-standard includes
+    // using DenseSet for O(1) lookup. This avoids the linear search overhead of
+    // vector-based tracking. We use separate sets because standard (<>) and
+    // non-standard ("") includes are semantically distinct in C/C++.
+    llvm::DenseSet<StringAttr> seenStandardIncludes;
+    llvm::DenseSet<StringAttr> seenNonStandardIncludes;
+    SmallVector<IncludeOp> duplicates;
+
+    // Iterate only over immediate IncludeOps in this module using getOps<>(),
+    // which does not traverse into nested modules. This ensures each module
+    // maintains its own include scope as separate translation units.
+    for (auto includeOp : includeRange) {
+      StringAttr includeName = includeOp.getIncludeAttr();
+      bool isStandard = includeOp.getIsStandardInclude();
+
+      // Select the appropriate set based on include type.
+      auto &seenSet =
+          isStandard ? seenStandardIncludes : seenNonStandardIncludes;
+
+      // Attempt to insert the name. If insertion fails, it's a duplicate.
+      if (!seenSet.insert(includeName).second) {
+        duplicates.push_back(includeOp);
+      }
+    }
+
+    // If no duplicates found, canonicalization doesn't apply.
+    if (duplicates.empty())
+      return failure();
+
+    // Erase all duplicate operations.
+    for (IncludeOp duplicate : duplicates)
+      rewriter.eraseOp(duplicate);
+
+    return success();
+  }
+};
+} // namespace
+
+void IncludeOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.add<DeduplicateIncludeOp>(context);
 }
 
 //===----------------------------------------------------------------------===//
