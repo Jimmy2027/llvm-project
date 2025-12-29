@@ -163,6 +163,23 @@ def SubISubILHSRHSLHS :
         (Arith_SubIOp (Arith_ConstantOp (GetZeroAttr $y)), $y,
             (MergeOverflow $ovf1, $ovf2))>;
 
+// subi(x, muli(y, -1)) -> addi(x, y)
+// Converts subtraction of negation into addition
+def SubIMulNegativeOneRhs :
+    Pat<(Arith_SubIOp
+           $x,
+           (Arith_MulIOp $y, (ConstantLikeMatcher AnyAttr:$c0), $ovf1), $ovf2),
+        (Arith_AddIOp $x, $y, DefOverflow),
+        [(IsScalarOrSplatNegativeOne $c0)]>;
+
+// subi(x, muli(-1, y)) -> addi(x, y)  [commuted multiply]
+def SubIMulNegativeOneLhs :
+    Pat<(Arith_SubIOp
+           $x,
+           (Arith_MulIOp (ConstantLikeMatcher AnyAttr:$c0), $y, $ovf1), $ovf2),
+        (Arith_AddIOp $x, $y, DefOverflow),
+        [(IsScalarOrSplatNegativeOne $c0)]>;
+
 //===----------------------------------------------------------------------===//
 // MulSIExtendedOp
 //===----------------------------------------------------------------------===//

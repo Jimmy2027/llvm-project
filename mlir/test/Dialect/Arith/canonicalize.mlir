@@ -1372,6 +1372,54 @@ func.func @addiMuliToSubiLhsVector(%arg0: vector<3xi64>, %arg1: vector<3xi64>) -
   return %add : vector<3xi64>
 }
 
+// -----
+
+// CHECK-LABEL: @subiMulNegOneToAddiRhsI32
+//       CHECK:   %[[RES:.*]] = arith.addi %arg0, %arg1 : i32
+//       CHECK:   return %[[RES]]
+func.func @subiMulNegOneToAddiRhsI32(%arg0: i32, %arg1: i32) -> i32 {
+  %c-1 = arith.constant -1 : i32
+  %neg = arith.muli %arg1, %c-1 : i32
+  %result = arith.subi %arg0, %neg : i32
+  return %result : i32
+}
+
+// -----
+
+// CHECK-LABEL: @subiMulNegOneToAddiLhsI32
+//       CHECK:   %[[RES:.*]] = arith.addi %arg0, %arg1 : i32
+//       CHECK:   return %[[RES]]
+func.func @subiMulNegOneToAddiLhsI32(%arg0: i32, %arg1: i32) -> i32 {
+  %c-1 = arith.constant -1 : i32
+  %neg = arith.muli %c-1, %arg1 : i32
+  %result = arith.subi %arg0, %neg : i32
+  return %result : i32
+}
+
+// -----
+
+// CHECK-LABEL: @subiMulNegOneToAddiI64
+//       CHECK:   %[[RES:.*]] = arith.addi %arg0, %arg1 : i64
+//       CHECK:   return %[[RES]]
+func.func @subiMulNegOneToAddiI64(%arg0: i64, %arg1: i64) -> i64 {
+  %c-1 = arith.constant -1 : i64
+  %neg = arith.muli %arg1, %c-1 : i64
+  %result = arith.subi %arg0, %neg : i64
+  return %result : i64
+}
+
+// -----
+
+// CHECK-LABEL: @subiMulNegOneToAddiSplatVector
+//       CHECK:   %[[RES:.*]] = arith.addi %arg0, %arg1 : vector<4xi32>
+//       CHECK:   return %[[RES]]
+func.func @subiMulNegOneToAddiSplatVector(%arg0: vector<4xi32>, %arg1: vector<4xi32>) -> vector<4xi32> {
+  %c-1 = arith.constant dense<-1> : vector<4xi32>
+  %neg = arith.muli %arg1, %c-1 : vector<4xi32>
+  %result = arith.subi %arg0, %neg : vector<4xi32>
+  return %result : vector<4xi32>
+}
+
 // CHECK-LABEL: @adduiExtendedZeroRhs
 //  CHECK-NEXT:   %[[false:.+]] = arith.constant false
 //  CHECK-NEXT:   return %arg0, %[[false]]

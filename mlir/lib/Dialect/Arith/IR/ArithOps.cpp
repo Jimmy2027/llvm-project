@@ -509,7 +509,8 @@ void arith::SubIOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                 MLIRContext *context) {
   patterns.add<SubIRHSAddConstant, SubILHSAddConstant, SubIRHSSubConstantRHS,
                SubIRHSSubConstantLHS, SubILHSSubConstantRHS,
-               SubILHSSubConstantLHS, SubISubILHSRHSLHS>(context);
+               SubILHSSubConstantLHS, SubISubILHSRHSLHS,
+               SubIMulNegativeOneRhs, SubIMulNegativeOneLhs>(context);
 }
 
 //===----------------------------------------------------------------------===//
