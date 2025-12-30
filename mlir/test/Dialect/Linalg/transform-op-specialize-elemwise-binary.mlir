@@ -66,6 +66,85 @@ func.func @specialize_div(%arg0: tensor<?x?xf32>, %arg1: tensor<?x?xf32>, %arg2:
 // CHECK-NOT: linalg.generic
 // CHECK: linalg.div ins(%[[ARG0]], %[[ARG1]] : tensor<?x?xf32>, tensor<?x?xf32>) outs(%[[ARG2]] : tensor<?x?xf32>) -> tensor<?x?xf32>
 
+// Integer addition specialization
+func.func @specialize_addi(%arg0: tensor<?x?xi32>, %arg1: tensor<?x?xi32>, %arg2: tensor<?x?xi32>) -> tensor<?x?xi32> {
+  %0 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<?x?xi32>, tensor<?x?xi32>) outs(%arg2 : tensor<?x?xi32>) {
+  ^bb0(%in: i32, %in_0: i32, %out: i32):
+    %1 = arith.addi %in, %in_0 : i32
+    linalg.yield %1 : i32
+  } -> tensor<?x?xi32>
+  return %0 : tensor<?x?xi32>
+}
+// CHECK-LABEL: specialize_addi
+// CHECK-SAME: %[[ARG0:.+]]: tensor<?x?xi32>, %[[ARG1:.+]]: tensor<?x?xi32>, %[[ARG2:.+]]: tensor<?x?xi32>) -> tensor<?x?xi32>
+// CHECK-NOT: linalg.generic
+// CHECK: linalg.add ins(%[[ARG0]], %[[ARG1]] : tensor<?x?xi32>, tensor<?x?xi32>) outs(%[[ARG2]] : tensor<?x?xi32>) -> tensor<?x?xi32>
+
+func.func @specialize_subi(%arg0: tensor<?x?xi32>, %arg1: tensor<?x?xi32>, %arg2: tensor<?x?xi32>) -> tensor<?x?xi32> {
+  %0 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<?x?xi32>, tensor<?x?xi32>) outs(%arg2 : tensor<?x?xi32>) {
+  ^bb0(%in: i32, %in_0: i32, %out: i32):
+    %1 = arith.subi %in, %in_0 : i32
+    linalg.yield %1 : i32
+  } -> tensor<?x?xi32>
+  return %0 : tensor<?x?xi32>
+}
+// CHECK-LABEL: specialize_subi
+// CHECK-SAME: %[[ARG0:.+]]: tensor<?x?xi32>, %[[ARG1:.+]]: tensor<?x?xi32>, %[[ARG2:.+]]: tensor<?x?xi32>) -> tensor<?x?xi32>
+// CHECK-NOT: linalg.generic
+// CHECK: linalg.sub ins(%[[ARG0]], %[[ARG1]] : tensor<?x?xi32>, tensor<?x?xi32>) outs(%[[ARG2]] : tensor<?x?xi32>) -> tensor<?x?xi32>
+
+func.func @specialize_muli(%arg0: tensor<?x?xi32>, %arg1: tensor<?x?xi32>, %arg2: tensor<?x?xi32>) -> tensor<?x?xi32> {
+  %0 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<?x?xi32>, tensor<?x?xi32>) outs(%arg2 : tensor<?x?xi32>) {
+  ^bb0(%in: i32, %in_0: i32, %out: i32):
+    %1 = arith.muli %in, %in_0 : i32
+    linalg.yield %1 : i32
+  } -> tensor<?x?xi32>
+  return %0 : tensor<?x?xi32>
+}
+// CHECK-LABEL: specialize_muli
+// CHECK-SAME: %[[ARG0:.+]]: tensor<?x?xi32>, %[[ARG1:.+]]: tensor<?x?xi32>, %[[ARG2:.+]]: tensor<?x?xi32>) -> tensor<?x?xi32>
+// CHECK-NOT: linalg.generic
+// CHECK: linalg.mul ins(%[[ARG0]], %[[ARG1]] : tensor<?x?xi32>, tensor<?x?xi32>) outs(%[[ARG2]] : tensor<?x?xi32>) -> tensor<?x?xi32>
+
+func.func @specialize_divsi(%arg0: tensor<?x?xi32>, %arg1: tensor<?x?xi32>, %arg2: tensor<?x?xi32>) -> tensor<?x?xi32> {
+  %0 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<?x?xi32>, tensor<?x?xi32>) outs(%arg2 : tensor<?x?xi32>) {
+  ^bb0(%in: i32, %in_0: i32, %out: i32):
+    %1 = arith.divsi %in, %in_0 : i32
+    linalg.yield %1 : i32
+  } -> tensor<?x?xi32>
+  return %0 : tensor<?x?xi32>
+}
+// CHECK-LABEL: specialize_divsi
+// CHECK-SAME: %[[ARG0:.+]]: tensor<?x?xi32>, %[[ARG1:.+]]: tensor<?x?xi32>, %[[ARG2:.+]]: tensor<?x?xi32>) -> tensor<?x?xi32>
+// CHECK-NOT: linalg.generic
+// CHECK: linalg.div ins(%[[ARG0]], %[[ARG1]] : tensor<?x?xi32>, tensor<?x?xi32>) outs(%[[ARG2]] : tensor<?x?xi32>) -> tensor<?x?xi32>
+
+// Test with i64 to ensure different integer widths work
+func.func @specialize_addi_i64(%arg0: tensor<?x?xi64>, %arg1: tensor<?x?xi64>, %arg2: tensor<?x?xi64>) -> tensor<?x?xi64> {
+  %0 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<?x?xi64>, tensor<?x?xi64>) outs(%arg2 : tensor<?x?xi64>) {
+  ^bb0(%in: i64, %in_0: i64, %out: i64):
+    %1 = arith.addi %in, %in_0 : i64
+    linalg.yield %1 : i64
+  } -> tensor<?x?xi64>
+  return %0 : tensor<?x?xi64>
+}
+// CHECK-LABEL: specialize_addi_i64
+// CHECK-NOT: linalg.generic
+// CHECK: linalg.add ins({{.*}} : tensor<?x?xi64>, tensor<?x?xi64>) outs({{.*}} : tensor<?x?xi64>)
+
+// Test with i8 (common in quantized models)
+func.func @specialize_addi_i8(%arg0: tensor<?x?xi8>, %arg1: tensor<?x?xi8>, %arg2: tensor<?x?xi8>) -> tensor<?x?xi8> {
+  %0 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0, %arg1 : tensor<?x?xi8>, tensor<?x?xi8>) outs(%arg2 : tensor<?x?xi8>) {
+  ^bb0(%in: i8, %in_0: i8, %out: i8):
+    %1 = arith.addi %in, %in_0 : i8
+    linalg.yield %1 : i8
+  } -> tensor<?x?xi8>
+  return %0 : tensor<?x?xi8>
+}
+// CHECK-LABEL: specialize_addi_i8
+// CHECK-NOT: linalg.generic
+// CHECK: linalg.add ins({{.*}} : tensor<?x?xi8>, tensor<?x?xi8>) outs({{.*}} : tensor<?x?xi8>)
+
 
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg0: !transform.any_op {transform.readonly}) {

@@ -357,19 +357,23 @@ FailureOr<LinalgOp> mlir::linalg::specializeGenericOp(RewriterBase &rewriter,
   if (isaElemwiseSingleBinaryOpInterface(genericOp)) {
     bool swap = areBinOpsSwapped(genericOp);
     Operation *op = &genericOp.getBody()->front();
-    if (isa<arith::AddFOp>(op)) {
+    // Addition: float and integer
+    if (isa<arith::AddFOp, arith::AddIOp>(op)) {
       LinalgOp namedOp = REPLACE_BINARY_OP(AddOp, swap);
       return namedOp;
     }
-    if (isa<arith::SubFOp>(op)) {
+    // Subtraction: float and integer
+    if (isa<arith::SubFOp, arith::SubIOp>(op)) {
       LinalgOp namedOp = REPLACE_BINARY_OP(SubOp, swap);
       return namedOp;
     }
-    if (isa<arith::MulFOp>(op)) {
+    // Multiplication: float and integer
+    if (isa<arith::MulFOp, arith::MulIOp>(op)) {
       LinalgOp namedOp = REPLACE_BINARY_OP(MulOp, swap);
       return namedOp;
     }
-    if (isa<arith::DivFOp>(op)) {
+    // Division: float and signed integer
+    if (isa<arith::DivFOp, arith::DivSIOp>(op)) {
       LinalgOp namedOp = REPLACE_BINARY_OP(DivOp, swap);
       return namedOp;
     }
