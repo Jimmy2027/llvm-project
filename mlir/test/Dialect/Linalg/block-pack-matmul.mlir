@@ -114,6 +114,28 @@ func.func @block_matmul_with_constant(
 
 // -----
 
+func.func @block_matmul_with_empty_acc(
+    %A: tensor<128x128xf32>, %B: tensor<128x128xf32>) -> tensor<128x128xf32> {
+  %acc = tensor.empty() : tensor<128x128xf32>
+  %0 = linalg.matmul ins(%A, %B : tensor<128x128xf32>, tensor<128x128xf32>)
+                      outs(%acc : tensor<128x128xf32>) -> tensor<128x128xf32>
+  return %0 : tensor<128x128xf32>
+}
+
+// CHECK-LABEL: func @block_matmul_with_empty_acc(
+// CHECK-SAME:    %[[A:[0-9a-z]+]]: tensor<128x128xf32>, %[[B:[0-9a-z]+]]: tensor<128x128xf32>
+// CHECK-DAG: %[[RES_DST:.+]] = tensor.empty() : tensor<128x128xf32>
+// CHECK-DAG: %[[ACC_PACKED:.+]] = tensor.empty() : tensor<4x8x32x16xf32>
+// CHECK-NOT: linalg.pack %[[RES_DST]]
+// CHECK: %[[GEMM_RES_PACKED:.+]] = linalg.generic
+// CHECK-SAME:  ins({{.*}} : tensor<4x2x32x64xf32>, tensor<8x2x16x64xf32>) outs(%[[ACC_PACKED]] : tensor<4x8x32x16xf32>)
+// CHECK: %[[RES_UNPACKED:.+]] = linalg.unpack %[[GEMM_RES_PACKED]]
+// CHECK-SAME:  inner_dims_pos = [0, 1] inner_tiles = [32, 16]
+// CHECK-SAME:  into %[[RES_DST]] : tensor<4x8x32x16xf32> -> tensor<128x128xf32>
+// CHECK: return %[[RES_UNPACKED]] : tensor<128x128xf32>
+
+// -----
+
 func.func @block_matmul_with_producer(
     %A: tensor<128x128xf32>, %B: tensor<128x128xf32>, %C: tensor<128x128xf32>) -> tensor<128x128xf32> {
   %cst = arith.constant 0.0 : f32
